@@ -1,4 +1,4 @@
-use starknet::ContractAddress;
+use starknet::{ContractAddress, ClassHash};
 
 #[derive(Drop, Serde, starknet::Store, Copy)]
 pub struct Outcome {
@@ -26,6 +26,16 @@ pub trait IMarketMaker<TContractState> {
     fn current_liquidity(self: @TContractState) -> u128; //
 
     fn fees_withdrawable_by(self: @TContractState, account: ContractAddress) -> u256; //
+
+    fn get_user_balance(self: @TContractState, account: ContractAddress) -> u256; //
+
+    fn get_user_market_share(
+        self: @TContractState, account: ContractAddress, market_id: u256, outcome_index: u32
+    ) -> u256; //
+
+    fn get_market(self: @TContractState, market_id: u256) -> FPMMMarket;
+
+    fn get_outcome(self: @TContractState, market_id: u256, outcome_index: u32) -> Outcome;
 
     fn init_market(ref self: TContractState, outcomes: Array<felt252>, deadline: u128);
 
@@ -58,13 +68,17 @@ pub trait IMarketMaker<TContractState> {
         outcome_index: u32,
         max_outcome_tokens_to_sell: u128
     );
+
+    fn upgrade(ref self: TContractState, new_class_hash: ClassHash);
 }
 
 #[starknet::contract]
 pub mod FixedProductMarketMaker {
+    use core::starknet::event::EventEmitter;
     use starknet::ContractAddress;
     use openzeppelin::token::erc20::interface::{IERC20Dispatcher, IERC20DispatcherTrait};
-    use starknet::{get_caller_address, get_contract_address};
+    use starknet::{get_caller_address, get_contract_address, ClassHash};
+    use starknet::SyscallResultTrait;
     use super::Outcome;
     use super::FPMMMarket;
 
@@ -82,6 +96,7 @@ pub mod FixedProductMarketMaker {
         fees_accrued: u256, // total fees accrued
         balances: LegacyMap<(u256, ContractAddress, u32), u256>,
         outcomes: LegacyMap<(u256, u32), Outcome>,
+        owner: ContractAddress,
     }
 
     #[event]
@@ -92,28 +107,26 @@ pub mod FixedProductMarketMaker {
         FPMMFundingRemoved: FPMMFundingRemoved,
         FPMMBuy: FPMMBuy,
         FPMMSell: FPMMSell,
+        Upgraded: Upgraded
     }
 
     #[derive(Drop, starknet::Event)]
     struct FPMMFundingAdded {
         funder: ContractAddress,
-        amounts_added: Array<u256>,
-        shares_minted: u256
+        amounts_added: u256
     }
 
     #[derive(Drop, starknet::Event)]
     struct FPMMFundingRemoved {
         funder: ContractAddress,
-        amounts_removed: Array<u256>,
         collateral_removed_from_fee_pool: u256,
-        shares_burnt: u256
+        amounts_removed: u256
     }
 
     #[derive(Drop, starknet::Event)]
     struct FPMMBuy {
         buyer: ContractAddress,
         investment_amount: u128,
-        fee_amount: u256,
         outcome_index: u32,
         outcome_tokens_bought: u256
     }
@@ -122,22 +135,32 @@ pub mod FixedProductMarketMaker {
     struct FPMMSell {
         seller: ContractAddress,
         return_amount: u128,
-        fee_amount: u256,
         outcome_index: u32,
         outcome_tokens_sold: u256
     }
 
     #[derive(Drop, starknet::Event)]
     struct FPMMMarketInit {
-        market_id: felt252,
+        market_id: u256,
         outcomes: Array<felt252>,
         deadline: u128
     }
 
+    #[derive(Drop, starknet::Event)]
+    struct Upgraded {
+        class_hash: ClassHash
+    }
+
     #[constructor]
-    fn constructor(ref self: ContractState, _collateral_token: ContractAddress, _fee: u32) {
+    fn constructor(
+        ref self: ContractState,
+        _collateral_token: ContractAddress,
+        _fee: u32,
+        _owner: ContractAddress
+    ) {
         self.collateral_token.write(_collateral_token);
         self.fee.write(_fee);
+        self.owner.write(_owner);
     }
 
     #[abi(embed_v0)]
@@ -151,6 +174,7 @@ pub mod FixedProductMarketMaker {
         }
 
         fn set_fee(ref self: ContractState, fee: u32) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can set fee');
             self.fee.write(fee);
         }
 
@@ -171,6 +195,7 @@ pub mod FixedProductMarketMaker {
 
 
         fn add_funding(ref self: ContractState, added_funds: u128) {
+            assert(added_funds > 0, 'Added funds must be positive');
             assert(
                 IERC20Dispatcher { contract_address: self.collateral_token.read() }
                     .transfer_from(
@@ -186,9 +211,17 @@ pub mod FixedProductMarketMaker {
                 );
 
             self.liquidity_pool.write(self.liquidity_pool.read() + added_funds);
+            self
+                .emit(
+                    FPMMFundingAdded {
+                        funder: get_caller_address(), amounts_added: added_funds.into()
+                    }
+                );
         }
 
         fn remove_funding(ref self: ContractState, funds_to_remove: u128) {
+            assert(funds_to_remove > 0, 'Funds must be positive');
+            assert(funds_to_remove <= self.liquidity_pool.read(), 'Cannot remove more than pool');
             assert(
                 self.liquidity_balance.read(get_caller_address()) >= funds_to_remove.into(),
                 'insufficient funds'
@@ -213,11 +246,26 @@ pub mod FixedProductMarketMaker {
                 );
 
             self.liquidity_pool.write(self.liquidity_pool.read() - funds_to_remove);
+            self
+                .emit(
+                    FPMMFundingRemoved {
+                        funder: get_caller_address(),
+                        amounts_removed: funds_to_remove.into(),
+                        collateral_removed_from_fee_pool: amount
+                    }
+                );
         }
 
         fn calc_buy_amount(
             self: @ContractState, market_id: u256, investment_amount: u128, outcome_index: u32
         ) -> u128 {
+            assert(investment_amount > 0, 'Investment must be positive');
+            assert(market_id <= self.num_markets.read(), 'Invalid market ID');
+            let market = self.markets.read(market_id);
+            assert(outcome_index < market.num_outcomes, 'Invalid outcome index');
+            let market = self.markets.read(market_id);
+            assert(market.is_active, 'Market is not active');
+            assert(!market.is_settled, 'Market is already settled');
             let pool_balances = self.get_pool_balances(market_id);
             let balance_copy = pool_balances.clone();
             let investment_amount_minus_fees = investment_amount
@@ -245,10 +293,16 @@ pub mod FixedProductMarketMaker {
         fn calc_sell_amount(
             self: @ContractState, market_id: u256, return_amount: u128, outcome_index: u32
         ) -> u128 {
+            assert(return_amount > 0, 'must be positive');
+            assert(market_id <= self.num_markets.read(), 'Invalid market ID');
+            let market = self.markets.read(market_id);
+            assert(outcome_index < market.num_outcomes, 'Invalid outcome index');
+            assert(market.is_active, 'Market is not active');
+            assert(!market.is_settled, 'Market is already settled');
             let pool_balances = self.get_pool_balances(market_id);
             let balance_copy = pool_balances.clone();
-            let return__amount_plus_fees = return_amount
-                + (return_amount * self.fee.read().into() / 100);
+            let return__amount_minus_fees = return_amount
+                - (return_amount * self.fee.read().into() / 100);
 
             let mut new_outcome_balance: u128 = *pool_balances.at(outcome_index);
 
@@ -258,14 +312,14 @@ pub mod FixedProductMarketMaker {
                     if i != outcome_index {
                         new_outcome_balance = new_outcome_balance
                             * *pool_balances.at(i)
-                            / (*pool_balances.at(i) - return__amount_plus_fees);
+                            / (*pool_balances.at(i) - return__amount_minus_fees);
                     }
                     i += 1;
                 };
 
             assert(new_outcome_balance > 0, 'must have non-zero balances');
 
-            return__amount_plus_fees + new_outcome_balance - *balance_copy.at(outcome_index)
+            return__amount_minus_fees + new_outcome_balance - *balance_copy.at(outcome_index)
         }
 
         fn buy(
@@ -313,6 +367,15 @@ pub mod FixedProductMarketMaker {
                 .write(
                     (market_id, get_caller_address(), outcome_index), outcome_tokens_to_buy.into()
                 );
+            self
+                .emit(
+                    FPMMBuy {
+                        buyer: get_caller_address(),
+                        investment_amount,
+                        outcome_index,
+                        outcome_tokens_bought: outcome_tokens_to_buy.into()
+                    }
+                );
         }
 
         fn sell(
@@ -349,32 +412,60 @@ pub mod FixedProductMarketMaker {
                     self.fees_accrued.read() + (return_amount.into() * self.fee.read().into() / 100)
                 );
 
-            let return_amount_plus_fees = return_amount
-                + (return_amount * self.fee.read().into() / 100);
+            let return_amount_minus_fees = return_amount
+                - (return_amount * self.fee.read().into() / 100);
 
             self
                 .calc_new_pool_balances(
-                    market_id, return_amount_plus_fees, outcome_index, outcome_tokens_to_sell, false
+                    market_id,
+                    return_amount_minus_fees,
+                    outcome_index,
+                    outcome_tokens_to_sell,
+                    false
                 );
 
             assert(
                 IERC20Dispatcher { contract_address: self.collateral_token.read() }
-                    .transfer(
-                        get_caller_address(), return_amount.into()
-                    ),
+                    .transfer(get_caller_address(), return_amount.into()),
                 'transfer failed'
             );
+            self
+                .emit(
+                    FPMMSell {
+                        seller: get_caller_address(),
+                        return_amount,
+                        outcome_index,
+                        outcome_tokens_sold: outcome_tokens_to_sell.into()
+                    }
+                );
+        }
+
+        fn get_user_balance(self: @ContractState, account: ContractAddress) -> u256 {
+            self.liquidity_balance.read(account)
+        }
+
+        fn get_user_market_share(
+            self: @ContractState, account: ContractAddress, market_id: u256, outcome_index: u32
+        ) -> u256 {
+            self.balances.read((market_id, account, outcome_index))
         }
 
         fn init_market(ref self: ContractState, outcomes: Array<felt252>, deadline: u128) {
+            assert(!outcomes.is_empty(), 'Outcomes array cannot be empty');
+            assert(outcomes.len() <= 256, 'Too many outcomes');
+            assert(
+                deadline > starknet::get_block_timestamp().into(), 'Deadline must be in the future'
+            );
+            let current_funding = self.liquidity_pool.read();
+            assert(current_funding > 0, 'No liquidity in the pool');
+
             let market_id = self.num_markets.read() + 1;
             self.num_markets.write(market_id);
+            let outcomes_copy = outcomes.clone();
 
             let num_outcomes = outcomes.len();
             let market = FPMMMarket { num_outcomes, deadline, is_active: true, is_settled: false };
             self.markets.write(market_id, market);
-
-            let current_funding = self.liquidity_pool.read();
 
             let outcome_tokens = current_funding / 10 / num_outcomes.into();
 
@@ -393,6 +484,22 @@ pub mod FixedProductMarketMaker {
                     );
                 i += 1;
             };
+
+            self.emit(FPMMMarketInit { market_id: market_id, outcomes: outcomes_copy, deadline });
+        }
+
+        fn upgrade(ref self: ContractState, new_class_hash: ClassHash) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can upgrade.');
+            starknet::syscalls::replace_class_syscall(new_class_hash).unwrap_syscall();
+            self.emit(Upgraded { class_hash: new_class_hash });
+        }
+
+        fn get_market(self: @ContractState, market_id: u256) -> FPMMMarket {
+            self.markets.read(market_id)
+        }
+
+        fn get_outcome(self: @ContractState, market_id: u256, outcome_index: u32) -> Outcome {
+            self.outcomes.read((market_id, outcome_index))
         }
     }
 

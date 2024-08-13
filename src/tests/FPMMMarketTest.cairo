@@ -169,7 +169,6 @@ fn shouldAcceptBets() {
 //     let tokenDispatcher = IERC20Dispatcher { contract_address: tokenAddress };
 // }
 
-
 // should let people sell their shares
 #[test]
 fn shouldLetPersonSell() {
@@ -196,12 +195,69 @@ fn shouldLetPersonSell() {
 
     dispatcher.init_market(outcomes, 2048704106);
 
+
+
     let min_amount = dispatcher.calc_buy_amount(1, 10000, 1);
 
+    print!("min amount: {:?}", min_amount);
+
     dispatcher.buy(1, 10000, 1, min_amount);
+
+
 
     let min_sell_amount = dispatcher.calc_sell_amount(1, 10000, 1);
 
     dispatcher.sell(1, 4000, 1, min_sell_amount);
+
+
+}
+
+// should let people sell their shares
+#[test]
+fn marketTesting() {
+    let tokenAddress = fakeERCDeployment();
+    let marketContract = deployMarketContract(tokenAddress);
+
+    let dispatcher = IMarketMakerDispatcher { contract_address: marketContract };
+
+    let tokenDispatcher = IERC20Dispatcher { contract_address: tokenAddress };
+
+    start_cheat_caller_address(marketContract, contract_address_const::<1>());
+
+    start_cheat_caller_address(tokenAddress, contract_address_const::<1>());
+    tokenDispatcher.approve(marketContract, 100000000);
+    stop_cheat_caller_address(tokenAddress);
+
+    dispatcher.add_funding(5000);
+
+    let mut outcomes: Array<felt252> = ArrayTrait::new();
+
+    outcomes.append('Yes');
+    outcomes.append('No');
+    outcomes.append('Draw');
+
+    dispatcher.init_market(outcomes, 2048704106);
+
+
+
+    let min_amount = dispatcher.calc_buy_amount(1, 10, 0);
+
+    dispatcher.buy(1, 10, 0, min_amount);
+
+
+
+    let min_amount = dispatcher.calc_buy_amount(1, 15, 1);
+    dispatcher.buy(1, 15, 1, min_amount);
+
+
+
+    let min_amount = dispatcher.calc_buy_amount(1, 30, 0);
+    dispatcher.buy(1, 30, 0, min_amount);
+
+
+    let min_sell_amount = dispatcher.calc_sell_amount(1, 5, 0);
+
+    dispatcher.sell(1, 5, 0, min_sell_amount);
+
 }
 
