@@ -40,6 +40,7 @@ fn deployMarketContract(tokenAddress: ContractAddress) -> ContractAddress {
     let mut calldata = array![];
     calldata.append_serde(tokenAddress);
     calldata.append_serde(2);
+    calldata.append_serde(contract_address_const::<1>());
     let (contract_deploy_address, _) = contract.deploy(@calldata).unwrap();
     contract_deploy_address
 }
@@ -68,7 +69,7 @@ fn createMarket() {
     outcomes.append('No');
     outcomes.append('Draw');
 
-    dispatcher.init_market(outcomes, 2048704106);
+    dispatcher.init_market(outcomes, 2068704106);
     let num_markets = dispatcher.get_num_markets();
 
     assert(num_markets == 1, 'market should be created!');
@@ -182,7 +183,7 @@ fn shouldLetPersonSell() {
     start_cheat_caller_address(marketContract, contract_address_const::<1>());
 
     start_cheat_caller_address(tokenAddress, contract_address_const::<1>());
-    tokenDispatcher.approve(marketContract, 100000000);
+    tokenDispatcher.approve(marketContract, 10000000000);
     stop_cheat_caller_address(tokenAddress);
 
     dispatcher.add_funding(1000000);
@@ -191,25 +192,20 @@ fn shouldLetPersonSell() {
 
     outcomes.append('Yes');
     outcomes.append('No');
-    outcomes.append('Draw');
 
-    dispatcher.init_market(outcomes, 2048704106);
+    dispatcher.init_market(outcomes, 2148704106);
 
-
-
-    let min_amount = dispatcher.calc_buy_amount(1, 10000, 1);
+    let min_amount = dispatcher.calc_buy_amount(1, 10000, 0);
 
     print!("min amount: {:?}", min_amount);
 
-    dispatcher.buy(1, 10000, 1, min_amount);
+    dispatcher.buy(1, 10000, 0, min_amount);
 
+    let min_sell_amount = dispatcher.calc_sell_amount(1, 4000, 0);
 
+    print!("min amount: {:?}", min_amount);    
 
-    let min_sell_amount = dispatcher.calc_sell_amount(1, 10000, 1);
-
-    dispatcher.sell(1, 4000, 1, min_sell_amount);
-
-
+    dispatcher.sell(1, 4000, 0, min_sell_amount);
 }
 
 // should let people sell their shares

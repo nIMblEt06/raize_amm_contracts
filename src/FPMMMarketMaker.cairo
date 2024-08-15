@@ -35,6 +35,10 @@ pub trait IMarketMaker<TContractState> {
 
     fn get_market(self: @TContractState, market_id: u256) -> FPMMMarket;
 
+    fn disable_market(ref self: TContractState, market_id: u256);
+
+    fn set_winner(ref self: TContractState, market_id: u256, outcome_index: u32);
+
     fn get_outcome(self: @TContractState, market_id: u256, outcome_index: u32) -> Outcome;
 
     fn init_market(ref self: TContractState, outcomes: Array<felt252>, deadline: u128);
@@ -191,6 +195,61 @@ pub mod FixedProductMarketMaker {
                 * self.liquidity_balance.read(account)
                 / self.liquidity_pool.read().into();
             amount + self.liquidity_balance.read(account)
+        }
+
+        fn disable_market(ref self: ContractState, market_id: u256) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can disable market');
+            let market = self.markets.read(market_id);
+            assert(market.is_active, 'Market is already disabled');
+            self
+                .markets
+                .write(
+                    market_id,
+                    FPMMMarket {
+                        num_outcomes: market.num_outcomes,
+                        deadline: market.deadline,
+                        is_active: false,
+                        is_settled: market.is_settled
+                    }
+                );
+        }
+
+        fn set_winner(ref self: ContractState, market_id: u256, outcome_index: u32) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can set winner');
+            let market = self.markets.read(market_id);
+            assert(market.is_active, 'Market is not active');
+            assert(!market.is_settled, 'Market is already settled');
+            let mut i = 0;
+            loop {
+                if i == market.num_outcomes {
+                    break;
+                }
+                let mut outcome = self.outcomes.read((market_id, i));
+                if i == outcome_index {
+                    self
+                        .outcomes
+                        .write(
+                            (market_id, i),
+                            Outcome {
+                                name: outcome.name,
+                                num_shares_in_pool: outcome.num_shares_in_pool,
+                                winner: true
+                            }
+                        );
+                }
+                i += 1;
+            };
+            self
+                .markets
+                .write(
+                    market_id,
+                    FPMMMarket {
+                        num_outcomes: market.num_outcomes,
+                        deadline: market.deadline,
+                        is_active: false,
+                        is_settled: true
+                    }
+                );
         }
 
 
