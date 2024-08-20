@@ -186,7 +186,7 @@ fn shouldLetPersonSell() {
     tokenDispatcher.approve(marketContract, 10000000000);
     stop_cheat_caller_address(tokenAddress);
 
-    dispatcher.add_funding(1000000);
+    dispatcher.add_funding(100000);
 
     let mut outcomes: Array<felt252> = ArrayTrait::new();
 
@@ -197,15 +197,22 @@ fn shouldLetPersonSell() {
 
     let min_amount = dispatcher.calc_buy_amount(1, 10000, 0);
 
-    print!("min amount: {:?}", min_amount);
+    println!("min amount: {:?}", min_amount);
 
     dispatcher.buy(1, 10000, 0, min_amount);
 
-    let min_sell_amount = dispatcher.calc_sell_amount(1, 4000, 0);
+    let funds_to_receive = dispatcher.calc_return_amount(1, min_amount, 0);
 
-    print!("min amount: {:?}", min_amount);    
+    println!("funds to receive: {:?}", funds_to_receive);
 
-    dispatcher.sell(1, 4000, 0, min_sell_amount);
+    let min_sell_amount = dispatcher
+        .calc_sell_amount(
+            1, funds_to_receive, 0
+        ); // calculates min amount of shares required to get 6000 collateral.
+
+    println!("min amount: {:?}", min_sell_amount);
+
+    dispatcher.sell(1, funds_to_receive, 0, min_sell_amount);
 }
 
 // should let people sell their shares
@@ -234,26 +241,18 @@ fn marketTesting() {
 
     dispatcher.init_market(outcomes, 2048704106);
 
-
-
     let min_amount = dispatcher.calc_buy_amount(1, 10, 0);
 
     dispatcher.buy(1, 10, 0, min_amount);
 
-
-
     let min_amount = dispatcher.calc_buy_amount(1, 15, 1);
     dispatcher.buy(1, 15, 1, min_amount);
-
-
 
     let min_amount = dispatcher.calc_buy_amount(1, 30, 0);
     dispatcher.buy(1, 30, 0, min_amount);
 
-
     let min_sell_amount = dispatcher.calc_sell_amount(1, 5, 0);
 
     dispatcher.sell(1, 5, 0, min_sell_amount);
-
 }
 

@@ -424,7 +424,9 @@ pub mod FixedProductMarketMaker {
             self
                 .balances
                 .write(
-                    (market_id, get_caller_address(), outcome_index), outcome_tokens_to_buy.into()
+                    (market_id, get_caller_address(), outcome_index),
+                    self.balances.read((market_id, get_caller_address(), outcome_index))
+                        + outcome_tokens_to_buy.into()
                 );
             self
                 .emit(
@@ -629,7 +631,7 @@ pub mod FixedProductMarketMaker {
                                 (market_id, i),
                                 Outcome {
                                     name: outcome.name,
-                                    num_shares_in_pool: shares_in_pool - amount + shares_updated,
+                                    num_shares_in_pool: shares_in_pool + shares_updated - amount,
                                     winner: false
                                 }
                             );
