@@ -333,8 +333,8 @@ pub mod FixedProductMarketMaker {
             let mut new_outcome_balance: u128 = *pool_balances.at(outcome_index);
 
             let mut i: u32 = 0;
-            while i != pool_balances.len()
-                - 1 {
+            while i != pool_balances
+                .len() {
                     if i != outcome_index {
                         new_outcome_balance = new_outcome_balance
                             * *pool_balances.at(i)
