@@ -193,26 +193,31 @@ fn shouldLetPersonSell() {
     outcomes.append('Yes');
     outcomes.append('No');
 
-    dispatcher.init_market(outcomes, 2148704106);
+    dispatcher.init_market(outcomes, 3148704106);
 
     let min_amount = dispatcher.calc_buy_amount(1, 10000, 0);
 
-    println!("min amount: {:?}", min_amount);
+    println!("pool balances: {:?}", min_amount);
 
     dispatcher.buy(1, 10000, 0, min_amount);
 
-    let funds_to_receive = dispatcher.calc_return_amount(1, min_amount, 0);
+    let min_amount = dispatcher.calc_buy_amount(1, 10000, 0);
 
-    println!("funds to receive: {:?}", funds_to_receive);
+    println!("pool balances: {:?}", min_amount);
 
-    let min_sell_amount = dispatcher
-        .calc_sell_amount(
-            1, funds_to_receive, 0
-        ); // calculates min amount of shares required to get 6000 collateral.
+    dispatcher.buy(1, 10000, 0, min_amount);
 
-    println!("min amount: {:?}", min_sell_amount);
+    let min_amount = dispatcher.calc_buy_amount(1, 10000, 0);
 
-    dispatcher.sell(1, funds_to_receive, 0, min_sell_amount);
+    println!("pool balances: {:?}", min_amount);
+
+    dispatcher.buy(1, 10000, 0, min_amount);
+
+    let min_amount = dispatcher.calc_buy_amount(1, 10000, 0);
+
+    println!("pool balances: {:?}", min_amount);
+
+    dispatcher.buy(1, 10000, 0, min_amount);
 }
 
 // should let people sell their shares
@@ -256,3 +261,47 @@ fn marketTesting() {
     dispatcher.sell(1, 5, 0, min_sell_amount);
 }
 
+fn shouldLetClaimWinnings() {
+    let tokenAddress = fakeERCDeployment();
+    let marketContract = deployMarketContract(tokenAddress);
+
+    let dispatcher = IMarketMakerDispatcher { contract_address: marketContract };
+
+    let tokenDispatcher = IERC20Dispatcher { contract_address: tokenAddress };
+
+    start_cheat_caller_address(marketContract, contract_address_const::<1>());
+
+    start_cheat_caller_address(tokenAddress, contract_address_const::<1>());
+    tokenDispatcher.approve(marketContract, 100000000);
+    stop_cheat_caller_address(tokenAddress);
+
+    dispatcher.add_funding(5000);
+
+    let mut outcomes: Array<felt252> = ArrayTrait::new();
+
+    outcomes.append('Yes');
+    outcomes.append('No');
+    outcomes.append('Draw');
+
+    dispatcher.init_market(outcomes, 2048704106);
+
+    let min_amount = dispatcher.calc_buy_amount(1, 10, 0);
+
+    dispatcher.buy(1, 10, 0, min_amount);
+
+    let min_amount = dispatcher.calc_buy_amount(1, 15, 1);
+    dispatcher.buy(1, 15, 1, min_amount);
+
+    let min_amount = dispatcher.calc_buy_amount(1, 30, 0);
+    dispatcher.buy(1, 30, 0, min_amount);
+
+    let min_sell_amount = dispatcher.calc_sell_amount(1, 5, 0);
+
+    dispatcher.sell(1, 5, 0, min_sell_amount);
+
+    dispatcher.set_market_winner(1, 0);
+
+    let share_balance = dispatcher.get_user_market_share(1, 0);
+
+    dispatcher.claim_winnings(1, 0);
+}

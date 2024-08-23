@@ -27,10 +27,10 @@ pub trait IMarketMaker<TContractState> {
 
     fn fees_withdrawable_by(self: @TContractState, account: ContractAddress) -> u256; //
 
-    fn get_user_balance(self: @TContractState, account: ContractAddress) -> u256; //
+    fn get_user_balance(self: @TContractState) -> u256; //
 
     fn get_user_market_share(
-        self: @TContractState, account: ContractAddress, market_id: u256, outcome_index: u32
+        self: @TContractState, market_id: u256, outcome_index: u32
     ) -> u256; //
 
     fn get_market(self: @TContractState, market_id: u256) -> FPMMMarket;
@@ -74,6 +74,18 @@ pub trait IMarketMaker<TContractState> {
     );
 
     fn upgrade(ref self: TContractState, new_class_hash: ClassHash);
+
+    fn set_treasury(ref self: TContractState, treasurer: ContractAddress);
+
+    fn get_treasury(self: @TContractState) -> ContractAddress;
+
+    fn set_treasurer_fee(ref self: TContractState, fee: u32);
+
+    fn set_market_winner(ref self: TContractState, market_id: u256, outcome_index: u32);
+
+    fn claim_winnings(ref self: TContractState, market_id: u256, outcome_index: u32);
+
+    fn update_deadline(ref self: TContractState, market_id: u256, deadline: u128);
 }
 
 #[starknet::contract]
@@ -92,7 +104,7 @@ pub mod FixedProductMarketMaker {
         num_markets: u256, // number of markets created
         markets: LegacyMap<u256, FPMMMarket>, // LegacyMap market_num to markets
         collateral_token: ContractAddress, // token used as collateral
-        fee: u32, // fee charged on trades
+        fee: u32, // fee given to the pool
         liquidity_pool: u128, // total unified liquidity in the pool, will be used to create outcome tokens for each market
         liquidity_balance: LegacyMap<
             ContractAddress, u256
@@ -101,6 +113,8 @@ pub mod FixedProductMarketMaker {
         balances: LegacyMap<(u256, ContractAddress, u32), u256>,
         outcomes: LegacyMap<(u256, u32), Outcome>,
         owner: ContractAddress,
+        treasury_wallet: ContractAddress,
+        treasury_fee: u32 // fee given to treasury
     }
 
     #[event]
@@ -328,22 +342,24 @@ pub mod FixedProductMarketMaker {
             let pool_balances = self.get_pool_balances(market_id);
             let balance_copy = pool_balances.clone();
             let investment_amount_minus_fees = investment_amount
-                - (investment_amount * self.fee.read().into() / 100);
+                - (investment_amount * self.fee.read().into() / 100)
+                - (investment_amount * self.treasury_fee.read().into() / 100);
 
-            let mut new_outcome_balance: u128 = *pool_balances.at(outcome_index);
+            let mut new_outcome_balance: u128 = *pool_balances
+                .at(outcome_index); // 19 / 20 = 0.95% of the pool balances
 
             let mut i: u32 = 0;
             while i != pool_balances
                 .len() {
                     if i != outcome_index {
                         new_outcome_balance = new_outcome_balance
-                            * *pool_balances.at(i)
-                            / (*pool_balances.at(i) + investment_amount_minus_fees);
+                            * (*pool_balances.at(i))
+                            / ((*pool_balances.at(i)) + investment_amount_minus_fees);
                     }
                     i += 1;
                 };
             assert(new_outcome_balance > 0, 'must have non-zero balances');
-            let min_outcome_tokens_to_buy = *balance_copy.at(outcome_index)
+            let min_outcome_tokens_to_buy = (*balance_copy.at(outcome_index))
                 + investment_amount_minus_fees
                 - new_outcome_balance;
             min_outcome_tokens_to_buy
@@ -409,8 +425,18 @@ pub mod FixedProductMarketMaker {
                         + (investment_amount.into() * self.fee.read().into() / 100)
                 );
 
+            assert(
+                IERC20Dispatcher { contract_address: self.collateral_token.read() }
+                    .transfer(
+                        self.treasury_wallet.read(),
+                        investment_amount.into() * self.treasury_fee.read().into() / 100
+                    ),
+                'transfer failed'
+            );
+
             let investment_amount_minus_fees = investment_amount
-                - (investment_amount * self.fee.read().into() / 100);
+                - (investment_amount * self.fee.read().into() / 100)
+                - (investment_amount * self.treasury_fee.read().into() / 100);
 
             self
                 .calc_new_pool_balances(
@@ -501,14 +527,14 @@ pub mod FixedProductMarketMaker {
                 );
         }
 
-        fn get_user_balance(self: @ContractState, account: ContractAddress) -> u256 {
-            self.liquidity_balance.read(account)
+        fn get_user_balance(self: @ContractState) -> u256 {
+            self.liquidity_balance.read(get_caller_address())
         }
 
         fn get_user_market_share(
-            self: @ContractState, account: ContractAddress, market_id: u256, outcome_index: u32
+            self: @ContractState, market_id: u256, outcome_index: u32
         ) -> u256 {
-            self.balances.read((market_id, account, outcome_index))
+            self.balances.read((market_id, get_caller_address(), outcome_index))
         }
 
         fn init_market(ref self: ContractState, outcomes: Array<felt252>, deadline: u128) {
@@ -549,6 +575,64 @@ pub mod FixedProductMarketMaker {
             self.emit(FPMMMarketInit { market_id: market_id, outcomes: outcomes_copy, deadline });
         }
 
+        fn set_market_winner(ref self: ContractState, market_id: u256, outcome_index: u32) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can set winner');
+            let market = self.markets.read(market_id);
+            assert(!market.is_settled, 'Market is already settled');
+            let mut i = 0;
+            loop {
+                if i == market.num_outcomes {
+                    break;
+                }
+                let mut outcome = self.outcomes.read((market_id, i));
+                if i == outcome_index {
+                    self
+                        .outcomes
+                        .write(
+                            (market_id, i),
+                            Outcome {
+                                name: outcome.name,
+                                num_shares_in_pool: outcome.num_shares_in_pool,
+                                winner: true
+                            }
+                        );
+                }
+                i += 1;
+            };
+            self
+                .markets
+                .write(
+                    market_id,
+                    FPMMMarket {
+                        num_outcomes: market.num_outcomes,
+                        deadline: market.deadline,
+                        is_active: false,
+                        is_settled: true
+                    }
+                );
+        }
+
+        fn claim_winnings(ref self: ContractState, market_id: u256, outcome_index: u32) {
+            let market = self.markets.read(market_id);
+            assert(market.is_settled, 'Market is not settled');
+            let outcome = self.outcomes.read((market_id, outcome_index));
+            assert(outcome.winner, 'Outcome is not a winner');
+            let user_balance = self.balances.read((market_id, get_caller_address(), outcome_index));
+            assert(user_balance > 0, 'No balance to claim');
+            let winnings = user_balance * (100 - self.fee.read().into()) / 100;
+            self.balances.write((market_id, get_caller_address(), outcome_index), 0);
+            assert(
+                IERC20Dispatcher { contract_address: self.collateral_token.read() }
+                    .transfer(get_caller_address(), user_balance.into() - winnings.into()),
+                'transfer failed'
+            );
+            assert(
+                IERC20Dispatcher { contract_address: self.collateral_token.read() }
+                    .transfer(get_caller_address(), winnings.into()),
+                'transfer failed'
+            );
+        }
+
         fn upgrade(ref self: ContractState, new_class_hash: ClassHash) {
             assert(get_caller_address() == self.owner.read(), 'Only owner can upgrade.');
             starknet::syscalls::replace_class_syscall(new_class_hash).unwrap_syscall();
@@ -561,6 +645,42 @@ pub mod FixedProductMarketMaker {
 
         fn get_outcome(self: @ContractState, market_id: u256, outcome_index: u32) -> Outcome {
             self.outcomes.read((market_id, outcome_index))
+        }
+
+        fn set_treasury(ref self: ContractState, treasurer: ContractAddress) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can set treasurer');
+            self.treasury_wallet.write(treasurer);
+        }
+
+        fn get_treasury(self: @ContractState) -> ContractAddress {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can see treasurer');
+            self.treasury_wallet.read()
+        }
+
+        fn set_treasurer_fee(ref self: ContractState, fee: u32) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can set fee');
+            self.treasury_fee.write(fee);
+        }
+
+        fn update_deadline(ref self: ContractState, market_id: u256, deadline: u128) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner can update deadline');
+            let market = self.markets.read(market_id);
+            assert(market.is_active, 'Market is not active');
+            assert(!market.is_settled, 'Market is already settled');
+            assert(
+                deadline > starknet::get_block_timestamp().into(), 'Deadline must be in the future'
+            );
+            self
+                .markets
+                .write(
+                    market_id,
+                    FPMMMarket {
+                        num_outcomes: market.num_outcomes,
+                        deadline,
+                        is_active: market.is_active,
+                        is_settled: market.is_settled
+                    }
+                );
         }
     }
 
