@@ -27,10 +27,10 @@ pub trait IMarketMaker<TContractState> {
 
     fn fees_withdrawable_by(self: @TContractState, account: ContractAddress) -> u256; //
 
-    fn get_user_balance(self: @TContractState) -> u256; //
+    fn get_user_balance(self: @TContractState, address: ContractAddress) -> u256; //
 
     fn get_user_market_share(
-        self: @TContractState, market_id: u256, outcome_index: u32
+        self: @TContractState, address: ContractAddress, market_id: u256, outcome_index: u32
     ) -> u256; //
 
     fn get_market(self: @TContractState, market_id: u256) -> FPMMMarket;
@@ -527,14 +527,14 @@ pub mod FixedProductMarketMaker {
                 );
         }
 
-        fn get_user_balance(self: @ContractState) -> u256 {
-            self.liquidity_balance.read(get_caller_address())
+        fn get_user_balance(self: @ContractState, address: ContractAddress) -> u256 {
+            self.liquidity_balance.read(address)
         }
 
         fn get_user_market_share(
-            self: @ContractState, market_id: u256, outcome_index: u32
+            self: @ContractState, address: ContractAddress, market_id: u256, outcome_index: u32
         ) -> u256 {
-            self.balances.read((market_id, get_caller_address(), outcome_index))
+            self.balances.read((market_id, address, outcome_index))
         }
 
         fn init_market(ref self: ContractState, outcomes: Array<felt252>, deadline: u128) {
